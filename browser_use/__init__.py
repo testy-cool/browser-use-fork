@@ -67,6 +67,7 @@ if TYPE_CHECKING:
 	from browser_use.llm.vercel.chat import ChatVercel
 	from browser_use.sandbox import sandbox
 	from browser_use.tools.service import Controller, Tools
+	from browser_use.playwright_fallback import PlaywrightAI, generate_playwright_script, save_playwright_script
 
 	# Lazy imports mapping - only import when actually accessed
 _LAZY_IMPORTS = {
@@ -104,6 +105,10 @@ _LAZY_IMPORTS = {
 	'models': ('browser_use.llm.models', None),
 	# Sandbox execution
 	'sandbox': ('browser_use.sandbox', 'sandbox'),
+	# Playwright-style API with AI fallbacks
+	'PlaywrightAI': ('browser_use.playwright_fallback', 'PlaywrightAI'),
+	'generate_playwright_script': ('browser_use.playwright_fallback', 'generate_playwright_script'),
+	'save_playwright_script': ('browser_use.playwright_fallback', 'save_playwright_script'),
 }
 
 
@@ -159,4 +164,8 @@ __all__ = [
 	'models',
 	# Sandbox execution
 	'sandbox',
+	# Playwright-style API with AI fallbacks
+	'PlaywrightAI',
+	'generate_playwright_script',
+	'save_playwright_script',
 ]
