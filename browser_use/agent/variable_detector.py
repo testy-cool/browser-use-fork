@@ -5,20 +5,144 @@ import re
 from browser_use.agent.views import AgentHistoryList, DetectedVariable
 from browser_use.dom.views import DOMInteractedElement
 
+# Regex pattern for explicit task variables: {{name:value}} or {{name}}
+# Examples: {{product_url:https://example.com}}, {{promo_code:SAVE20}}, {{city}}
+TASK_VARIABLE_PATTERN = re.compile(r'\{\{([a-zA-Z_][a-zA-Z0-9_]*?)(?::([^}]+))?\}\}')
 
-def detect_variables_in_history(history: AgentHistoryList) -> dict[str, DetectedVariable]:
+
+def extract_task_variables(task: str) -> tuple[str, dict[str, DetectedVariable]]:
+	"""
+	Extract explicit variables from task text using {{name:value}} syntax.
+
+	Syntax options:
+	- {{name:value}} - Named variable with explicit value
+	- {{name}} - Named placeholder (will need value on replay)
+
+	Examples:
+		task = "Go to {{product_url:https://example.com}} and apply {{promo_code:SAVE20}}"
+		processed_task, variables = extract_task_variables(task)
+		# processed_task = "Go to https://example.com and apply SAVE20"
+		# variables = {
+		#     'product_url': DetectedVariable(name='product_url', original_value='https://example.com', ...),
+		#     'promo_code': DetectedVariable(name='promo_code', original_value='SAVE20', ...),
+		# }
+
+	Returns:
+		Tuple of (processed_task with values substituted, dict of detected variables)
+	"""
+	detected: dict[str, DetectedVariable] = {}
+
+	def replace_match(match: re.Match) -> str:
+		var_name = match.group(1)
+		var_value = match.group(2)  # May be None if using {{name}} syntax
+
+		if var_value is None:
+			# Placeholder without value - keep the marker for now
+			# User must provide value on replay
+			return match.group(0)
+
+		# Detect format from value
+		var_format = _detect_format_from_value(var_value)
+
+		# Handle duplicate variable names
+		final_name = _ensure_unique_name(var_name, detected)
+
+		detected[final_name] = DetectedVariable(
+			name=final_name,
+			original_value=var_value,
+			type='string',
+			format=var_format,
+			source='task',  # Mark as coming from task text
+		)
+
+		return var_value
+
+	processed_task = TASK_VARIABLE_PATTERN.sub(replace_match, task)
+
+	return processed_task, detected
+
+
+def substitute_task_variables(task: str, variables: dict[str, str]) -> str:
+	"""
+	Substitute variables in task text.
+
+	Works with both:
+	- {{name:value}} syntax (replaces the whole marker including old value)
+	- {{name}} syntax (replaces placeholder with provided value)
+
+	Args:
+		task: Original task text with variable markers
+		variables: Dict mapping variable names to new values
+
+	Returns:
+		Task text with variables substituted
+	"""
+	def replace_match(match: re.Match) -> str:
+		var_name = match.group(1)
+		original_value = match.group(2)  # May be None
+
+		if var_name in variables:
+			return variables[var_name]
+		elif original_value is not None:
+			return original_value
+		else:
+			# Placeholder without value and no substitution provided
+			return match.group(0)
+
+	return TASK_VARIABLE_PATTERN.sub(replace_match, task)
+
+
+def _detect_format_from_value(value: str) -> str | None:
+	"""Detect the format hint from a variable value."""
+	# URL detection
+	if value.startswith(('http://', 'https://', 'www.')):
+		return 'url'
+
+	# Email detection
+	if '@' in value and '.' in value:
+		if re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', value):
+			return 'email'
+
+	# Phone detection
+	if re.match(r'^[\d\s\-\(\)\+]+$', value):
+		digits_only = re.sub(r'[\s\-\(\)\+]', '', value)
+		if len(digits_only) >= 10:
+			return 'phone'
+
+	# Date detection
+	if re.match(r'^\d{4}-\d{2}-\d{2}$', value):
+		return 'date'
+
+	return None
+
+
+def detect_variables_in_history(
+	history: AgentHistoryList,
+	task_variables: dict[str, DetectedVariable] | None = None,
+) -> dict[str, DetectedVariable]:
 	"""
 	Analyze agent history and detect reusable variables.
 
-	Uses two strategies:
-	1. Element attributes (id, name, type, placeholder, aria-label) - most reliable
-	2. Value pattern matching (email, phone, date formats) - fallback
+	Uses three strategies (in priority order):
+	1. Explicit task variables ({{name:value}} syntax) - most reliable, user-specified
+	2. Element attributes (id, name, type, placeholder, aria-label) - reliable for form inputs
+	3. Value pattern matching (email, phone, date formats) - fallback
+
+	Args:
+		history: The agent's action history
+		task_variables: Optional pre-extracted task variables from {{name:value}} syntax
 
 	Returns:
 		Dictionary mapping variable names to DetectedVariable objects
 	"""
 	detected: dict[str, DetectedVariable] = {}
 	detected_values: set[str] = set()  # Track which values we've already detected
+
+	# STRATEGY 0: Include explicit task variables first (highest priority)
+	if task_variables:
+		for var_name, var_info in task_variables.items():
+			detected[var_name] = var_info
+			detected_values.add(var_info.original_value)
 
 	for step_idx, history_item in enumerate(history.history):
 		if not history_item.model_output:

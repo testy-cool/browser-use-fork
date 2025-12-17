@@ -404,6 +404,10 @@ class AgentHistoryList(BaseModel, Generic[AgentStructuredOutput]):
 	history: list[AgentHistory]
 	usage: UsageSummary | None = None
 
+	# Task metadata for replay with variable substitution
+	original_task: str | None = None  # Task text with {{variable}} markers preserved
+	task_variables: dict[str, DetectedVariable] = Field(default_factory=dict)  # Extracted task variables
+
 	_output_model_schema: type[AgentStructuredOutput] | None = None
 
 	def total_duration_seconds(self) -> float:
@@ -474,9 +478,17 @@ class AgentHistoryList(BaseModel, Generic[AgentStructuredOutput]):
 
 	def model_dump(self, **kwargs) -> dict[str, Any]:
 		"""Custom serialization that properly uses AgentHistory's model_dump"""
-		return {
+		result: dict[str, Any] = {
 			'history': [h.model_dump(**kwargs) for h in self.history],
 		}
+		# Include task metadata for replay
+		if self.original_task:
+			result['original_task'] = self.original_task
+		if self.task_variables:
+			result['task_variables'] = {
+				name: var.model_dump() for name, var in self.task_variables.items()
+			}
+		return result
 
 	@classmethod
 	def load_from_dict(cls, data: dict[str, Any], output_model: type[AgentOutput]) -> AgentHistoryList:
@@ -489,6 +501,13 @@ class AgentHistoryList(BaseModel, Generic[AgentStructuredOutput]):
 					h['model_output'] = None
 			if 'interacted_element' not in h['state']:
 				h['state']['interacted_element'] = None
+
+		# Deserialize task_variables if present
+		if 'task_variables' in data and isinstance(data['task_variables'], dict):
+			data['task_variables'] = {
+				name: DetectedVariable.model_validate(var) if isinstance(var, dict) else var
+				for name, var in data['task_variables'].items()
+			}
 
 		history = cls.model_validate(data)
 		return history
@@ -792,6 +811,7 @@ class DetectedVariable(BaseModel):
 	original_value: str
 	type: str = 'string'
 	format: str | None = None
+	source: str = 'action'  # 'task' for {{var}} markers, 'action' for form input detection
 
 
 class VariableMetadata(BaseModel):

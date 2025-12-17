@@ -339,7 +339,12 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			self.tools.use_structured_output_action(self.output_model_schema)
 
 		# Core components - task enhancement now has access to output_model_schema from tools
-		self.task = self._enhance_task_with_schema(task, output_model_schema)
+		# Extract task variables ({{name:value}} syntax) before processing
+		from browser_use.agent.variable_detector import extract_task_variables
+
+		self._original_task_with_markers = task  # Preserve original for serialization
+		processed_task, self._task_variables = extract_task_variables(task)
+		self.task = self._enhance_task_with_schema(processed_task, output_model_schema)
 		self.llm = llm
 		self.judge_llm = judge_llm
 
@@ -388,8 +393,13 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		# Initialize state
 		self.state = injected_agent_state or AgentState()
 
-		# Initialize history
-		self.history = AgentHistoryList(history=[], usage=None)
+		# Initialize history with task metadata for replay
+		self.history = AgentHistoryList(
+			history=[],
+			usage=None,
+			original_task=self._original_task_with_markers,
+			task_variables=self._task_variables,
+		)
 
 		# Initialize agent directory
 		import time
@@ -2788,7 +2798,14 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 		# Generate AI summary of rerun completion
 		self.logger.info('🤖 Generating AI summary of rerun completion...')
-		summary_result = await self._generate_rerun_summary(self.task, results, summary_llm)
+		# Use task from history if available (for replays), otherwise use agent's task
+		replay_task = self.task
+		if history.original_task:
+			# Extract the processed task (with {{var:value}} markers replaced by values)
+			from browser_use.agent.variable_detector import extract_task_variables
+
+			replay_task, _ = extract_task_variables(history.original_task)
+		summary_result = await self._generate_rerun_summary(replay_task, results, summary_llm)
 		results.append(summary_result)
 
 		await self.close()
@@ -3144,17 +3161,18 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		return asyncio.run(self.run(max_steps=max_steps, on_step_start=on_step_start, on_step_end=on_step_end))
 
 	def detect_variables(self) -> dict[str, DetectedVariable]:
-		"""Detect reusable variables in agent history"""
+		"""Detect reusable variables in agent history, including explicit task variables"""
 		from browser_use.agent.variable_detector import detect_variables_in_history
 
-		return detect_variables_in_history(self.history)
+		# Include task variables (from {{name:value}} syntax) when detecting
+		return detect_variables_in_history(self.history, task_variables=self.history.task_variables)
 
 	def _substitute_variables_in_history(self, history: AgentHistoryList, variables: dict[str, str]) -> AgentHistoryList:
 		"""Substitute variables in history with new values for rerunning with different data"""
-		from browser_use.agent.variable_detector import detect_variables_in_history
+		from browser_use.agent.variable_detector import detect_variables_in_history, substitute_task_variables
 
-		# Detect variables in the history
-		detected_vars = detect_variables_in_history(history)
+		# Detect variables in the history (including task variables)
+		detected_vars = detect_variables_in_history(history, task_variables=history.task_variables)
 
 		# Build a mapping of original values to new values
 		value_replacements: dict[str, str] = {}
@@ -3173,6 +3191,10 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		import copy
 
 		modified_history = copy.deepcopy(history)
+
+		# Also substitute in the original_task if present (for task variables)
+		if modified_history.original_task:
+			modified_history.original_task = substitute_task_variables(modified_history.original_task, variables)
 
 		# Substitute values in all actions
 		substitution_count = 0

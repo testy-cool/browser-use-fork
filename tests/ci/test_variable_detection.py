@@ -406,3 +406,266 @@ def test_detect_variables_multiple_types():
 	assert result['email'].original_value == 'test@example.com'
 	assert result['first_name'].original_value == 'John'
 	assert result['date'].original_value == '1990-01-01'
+
+
+# =============================================================================
+# Task Variable Detection Tests ({{name:value}} syntax)
+# =============================================================================
+
+from browser_use.agent.variable_detector import (
+	extract_task_variables,
+	substitute_task_variables,
+	_detect_format_from_value,
+)
+
+
+def test_extract_task_variables_simple():
+	"""Test basic extraction of task variables"""
+	task = 'Go to {{url:https://example.com}} and click submit'
+	processed_task, variables = extract_task_variables(task)
+
+	assert processed_task == 'Go to https://example.com and click submit'
+	assert len(variables) == 1
+	assert 'url' in variables
+	assert variables['url'].original_value == 'https://example.com'
+	assert variables['url'].format == 'url'
+	assert variables['url'].source == 'task'
+
+
+def test_extract_task_variables_multiple():
+	"""Test extraction of multiple task variables"""
+	task = '''Test promo codes on {{product_url:https://shop.com/item1}}:
+	- {{promo_code:SAVE20}}
+	- {{promo_code_2:VIP50}}'''
+
+	processed_task, variables = extract_task_variables(task)
+
+	assert 'https://shop.com/item1' in processed_task
+	assert 'SAVE20' in processed_task
+	assert 'VIP50' in processed_task
+	assert '{{' not in processed_task
+
+	assert len(variables) == 3
+	assert variables['product_url'].original_value == 'https://shop.com/item1'
+	assert variables['promo_code'].original_value == 'SAVE20'
+	assert variables['promo_code_2'].original_value == 'VIP50'
+
+
+def test_extract_task_variables_placeholder_only():
+	"""Test that placeholders without values are preserved"""
+	task = 'Fill in {{email}} and {{name}}'
+	processed_task, variables = extract_task_variables(task)
+
+	# Placeholders without values should remain
+	assert processed_task == 'Fill in {{email}} and {{name}}'
+	assert len(variables) == 0  # No variables extracted (need values)
+
+
+def test_extract_task_variables_no_markers():
+	"""Test task without any variable markers"""
+	task = 'Just a regular task without variables'
+	processed_task, variables = extract_task_variables(task)
+
+	assert processed_task == task
+	assert len(variables) == 0
+
+
+def test_extract_task_variables_url_format():
+	"""Test that URL format is detected"""
+	task = '{{link:https://www.example.com/path}}'
+	_, variables = extract_task_variables(task)
+
+	assert variables['link'].format == 'url'
+
+
+def test_extract_task_variables_email_format():
+	"""Test that email format is detected"""
+	task = '{{contact:test@example.com}}'
+	_, variables = extract_task_variables(task)
+
+	assert variables['contact'].format == 'email'
+
+
+def test_extract_task_variables_phone_format():
+	"""Test that phone format is detected"""
+	task = '{{phone:+1 555 123 4567}}'
+	_, variables = extract_task_variables(task)
+
+	assert variables['phone'].format == 'phone'
+
+
+def test_extract_task_variables_date_format():
+	"""Test that date format is detected"""
+	task = '{{birthday:1990-01-15}}'
+	_, variables = extract_task_variables(task)
+
+	assert variables['birthday'].format == 'date'
+
+
+def test_extract_task_variables_no_format():
+	"""Test that arbitrary values have no specific format"""
+	task = '{{code:PROMO123}}'
+	_, variables = extract_task_variables(task)
+
+	assert variables['code'].format is None
+
+
+def test_substitute_task_variables_basic():
+	"""Test basic variable substitution"""
+	task = 'Go to {{url:https://old.com}} and enter {{code:OLD}}'
+	new_values = {'url': 'https://new.com', 'code': 'NEW'}
+
+	result = substitute_task_variables(task, new_values)
+
+	assert result == 'Go to https://new.com and enter NEW'
+
+
+def test_substitute_task_variables_partial():
+	"""Test partial substitution (some variables unchanged)"""
+	task = '{{url:https://example.com}} with {{code:ABC}}'
+	new_values = {'code': 'XYZ'}  # Only substitute code
+
+	result = substitute_task_variables(task, new_values)
+
+	assert result == 'https://example.com with XYZ'
+
+
+def test_substitute_task_variables_placeholder():
+	"""Test substitution of placeholder-only variables"""
+	task = 'Email: {{email}}, Name: {{name}}'
+	new_values = {'email': 'new@example.com', 'name': 'John'}
+
+	result = substitute_task_variables(task, new_values)
+
+	assert result == 'Email: new@example.com, Name: John'
+
+
+def test_substitute_task_variables_unmatched_placeholder():
+	"""Test that unmatched placeholders remain"""
+	task = 'Email: {{email}}'
+	new_values = {}  # No substitution provided
+
+	result = substitute_task_variables(task, new_values)
+
+	assert result == 'Email: {{email}}'
+
+
+def test_detect_format_from_value_url():
+	"""Test URL format detection"""
+	assert _detect_format_from_value('https://example.com') == 'url'
+	assert _detect_format_from_value('http://localhost:8080') == 'url'
+	assert _detect_format_from_value('www.example.com') == 'url'
+
+
+def test_detect_format_from_value_email():
+	"""Test email format detection"""
+	assert _detect_format_from_value('test@example.com') == 'email'
+	assert _detect_format_from_value('user.name@domain.co.uk') == 'email'
+
+
+def test_detect_format_from_value_phone():
+	"""Test phone format detection"""
+	assert _detect_format_from_value('+1 555 123 4567') == 'phone'
+	assert _detect_format_from_value('555-123-4567') == 'phone'
+
+
+def test_detect_format_from_value_date():
+	"""Test date format detection"""
+	assert _detect_format_from_value('2024-01-15') == 'date'
+	assert _detect_format_from_value('1990-12-31') == 'date'
+
+
+def test_detect_format_from_value_none():
+	"""Test that arbitrary text has no format"""
+	assert _detect_format_from_value('PROMO123') is None
+	assert _detect_format_from_value('random text') is None
+
+
+def test_detect_variables_with_task_variables():
+	"""Test that task variables are included in detection"""
+	from types import SimpleNamespace
+
+	# Create task variables
+	task_variables = {
+		'product_url': DetectedVariable(
+			name='product_url',
+			original_value='https://example.com/product',
+			format='url',
+			source='task',
+		),
+		'promo_code': DetectedVariable(
+			name='promo_code',
+			original_value='SAVE20',
+			source='task',
+		),
+	}
+
+	# Empty history
+	history = SimpleNamespace(history=[])
+
+	result = detect_variables_in_history(history, task_variables=task_variables)  # type: ignore[arg-type]
+
+	assert len(result) == 2
+	assert 'product_url' in result
+	assert 'promo_code' in result
+	assert result['product_url'].source == 'task'
+
+
+def test_detect_variables_task_and_action_combined():
+	"""Test that both task and action variables are detected"""
+	from types import SimpleNamespace
+
+	# Task variables
+	task_variables = {
+		'product_url': DetectedVariable(
+			name='product_url',
+			original_value='https://example.com',
+			format='url',
+			source='task',
+		),
+	}
+
+	# Action history with email input
+	element = create_test_element(attributes={'type': 'email'})
+	mock_action = SimpleNamespace(**{'input': {'index': 1, 'text': 'user@example.com'}})
+	mock_output = SimpleNamespace(action=[mock_action])
+	mock_state = SimpleNamespace(interacted_element=[element])
+	mock_history_item = SimpleNamespace(model_output=mock_output, state=mock_state)
+	history = SimpleNamespace(history=[mock_history_item])
+
+	result = detect_variables_in_history(history, task_variables=task_variables)  # type: ignore[arg-type]
+
+	# Should have both task and action variables
+	assert len(result) == 2
+	assert 'product_url' in result
+	assert 'email' in result
+	assert result['product_url'].source == 'task'
+	assert result['email'].source == 'action'
+
+
+def test_task_variable_value_not_duplicated_in_action():
+	"""Test that task variable values are not re-detected from actions"""
+	from types import SimpleNamespace
+
+	# Task variable with a URL
+	task_variables = {
+		'url': DetectedVariable(
+			name='url',
+			original_value='https://example.com',
+			format='url',
+			source='task',
+		),
+	}
+
+	# Same URL appears in action (e.g., go_to action)
+	mock_action = SimpleNamespace(**{'go_to': {'url': 'https://example.com'}})
+	mock_output = SimpleNamespace(action=[mock_action])
+	mock_state = SimpleNamespace(interacted_element=None)
+	mock_history_item = SimpleNamespace(model_output=mock_output, state=mock_state)
+	history = SimpleNamespace(history=[mock_history_item])
+
+	result = detect_variables_in_history(history, task_variables=task_variables)  # type: ignore[arg-type]
+
+	# Should only have one variable (from task), not duplicated
+	assert len(result) == 1
+	assert result['url'].source == 'task'
